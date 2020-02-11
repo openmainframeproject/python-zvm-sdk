@@ -56,3 +56,12 @@ class ImageOps(object):
     def image_export(self, image_name, dest_url, remote_host=None):
         return self._smtclient.image_export(image_name, dest_url,
                                              remote_host)
+
+    def flashimage_import(self, image_name, userid, vdev, image_meta):
+        return self._smtclient.flashimage_import(image_name, userid, vdev, image_meta)
+
+    def flashimage_query(self, image_name=None):
+        return self._smtclient.flashimage_query(image_name)
+
+    def flashimage_delete(self, image_name):
+        return self._smtclient.flashimage_delete(image_name)

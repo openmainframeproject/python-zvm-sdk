@@ -35,6 +35,25 @@ create = {
     'additionalProperties': False
 }
 
+flash_create = {
+    'type': 'object',
+    'properties': {
+        'image': {
+            'type': 'object',
+            'properties': {
+                'image_name': parameter_types.name,
+                'userid': parameter_types.userid,
+                'vdev': parameter_types.vdev,
+                'image_meta': parameter_types.image_meta
+            },
+            'required': ['image_name', 'userid', 'vdev', 'image_meta'],
+            'additionalProperties': False
+        },
+        'additionalProperties': False
+    },
+    'required': ['image'],
+    'additionalProperties': False
+}
 
 export = {
     'type': 'object',

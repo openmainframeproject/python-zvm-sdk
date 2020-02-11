@@ -335,6 +335,49 @@ class SDKAPI(object):
             LOG.error("Failed to export image '%s'" % image_name)
             raise
 
+    def flashimage_import(self, image_name, userid, vdev, image_meta):
+        """Import flashcopy image to zvmsdk image repository
+
+        :param image_name: image name that can be uniquely identify an image
+        :param userid: owner of the disk to be used as the image
+        :parm vdev: disk to be used as the image
+        :param dict image_meta:
+               a dictionary to describe the image info, such as md5sum,
+               os_version. For example:
+               {'os_version': 'rhel6.2',
+               'md5sum': ' 46f199c336eab1e35a72fa6b5f6f11f5'}
+        """
+        try:
+            self._imageops.flashimage_import(image_name, userid, vdev, image_meta)
+        except exception.SDKBaseException:
+            LOG.error("Failed to import flash image '%s'" % image_name)
+            raise
+
+    def flashimage_query(self, imagename=None):
+        """Get the list of flash image info in image repository
+
+        :param imagename:  Used to retrieve the specified image info,
+               if not specified, all images info will be returned
+
+        :returns: A list that contains the specified or all images info
+        """
+        try:
+            return self._imageops.flashimage_query(imagename)
+        except exception.SDKBaseException:
+            LOG.error("Failed to query flash image")
+            raise
+
+    def flashimage_delete(self, image_name):
+        """Delete flash image from image repository
+
+        :param image_name: the name of the image to be deleted
+        """
+        try:
+            self._imageops.flashimage_delete(image_name)
+        except exception.SDKBaseException:
+            LOG.error("Failed to delete flash image '%s'" % image_name)
+            raise
+
     @check_guest_exist()
     def guest_deploy(self, userid, image_name, transportfiles=None,
                      remotehost=None, vdev=None, hostname=None):

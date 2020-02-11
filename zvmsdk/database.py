@@ -35,11 +35,13 @@ _DIR_MODE = 0o755
 _VOLUME_CONN = None
 _NETWORK_CONN = None
 _IMAGE_CONN = None
+_FLASHIMAGE_CONN = None
 _GUEST_CONN = None
 _FCP_CONN = None
 _DBLOCK_VOLUME = threading.RLock()
 _DBLOCK_NETWORK = threading.RLock()
 _DBLOCK_IMAGE = threading.RLock()
+_DBLOCK_FLASHIMAGE = threading.RLock()
 _DBLOCK_GUEST = threading.RLock()
 _DBLOCK_FCP = threading.RLock()
 
@@ -75,6 +77,22 @@ def get_image_conn():
         raise exception.SDKDatabaseException(msg=err)
     finally:
         _DBLOCK_IMAGE.release()
+
+
+@contextlib.contextmanager
+def get_flashimage_conn():
+    global _FLASHIMAGE_CONN, _DBLOCK_IMAGE
+    if not _FLASHIMAGE_CONN:
+        _FLASHIMAGE_CONN = _init_db_conn(const.DATABASE_FLASHIMAGE)
+
+    _DBLOCK_FLASHIMAGE.acquire()
+    try:
+        yield _FLASHIMAGE_CONN
+    except Exception as err:
+        LOG.error("Execute SQL statements error: %s", six.text_type(err))
+        raise exception.SDKDatabaseException(msg=err)
+    finally:
+        _DBLOCK_FLASHIMAGE.release()
 
 
 @contextlib.contextmanager
@@ -552,6 +570,74 @@ class ImageDbOperator(object):
         """Delete the record of specified imagename from image table"""
         with get_image_conn() as conn:
             conn.execute("DELETE FROM image WHERE imagename=?", (imagename,))
+
+
+class FlashImageDbOperator(object):
+
+    def __init__(self):
+        self._create_flashimage_table()
+        self._module_id = 'flashimage'
+
+    def _create_flashimage_table(self):
+        create_flashimage_table_sql = ' '.join((
+                'CREATE TABLE IF NOT EXISTS flashimage (',
+                'imagename         varchar(128) PRIMARY KEY COLLATE NOCASE,',
+                'userid                   char(8),',
+                'vdev                     char(4),',
+                'imageosdistro            varchar(16),',
+                'disk_size_units          varchar(512),',
+                'comments                 varchar(128))'))
+        with get_flashimage_conn() as conn:
+            conn.execute(create_flashimage_table_sql)
+
+    def flashimage_add_record(self, imagename, userid, vdev, imageosdistro, 
+                              disk_size_units, comments=None):
+        if comments is not None:
+            with get_flashimage_conn() as conn:
+                conn.execute("INSERT INTO flashimage (imagename, userid, vdev, imageosdistro,"
+                             "disk_size_units, comments) VALUES (?, ?, ?, ?, ?, ?)"
+                             (imagename, userid, vdev, imageosdistro, 
+                              disk_size_units, comments))
+        else:
+            with get_flashimage_conn() as conn:
+                conn.execute("INSERT INTO flashimage (imagename, userid, vdev, imageosdistro,"
+                             "disk_size_units) VALUES (?, ?, ?, ?, ?)",
+                             (imagename, userid, vdev, imageosdistro, disk_size_units))
+
+    def flashimage_query_record(self, imagename=None):
+        """Query the flashimage record from database, if imagename is None, all
+        of the image records will be returned, otherwise only the specified
+        image record will be returned."""
+
+        if imagename:
+            with get_flashimage_conn() as conn:
+                result = conn.execute("SELECT * FROM flashimage WHERE "
+                                      "imagename=?", (imagename,))
+                image_list = result.fetchall()
+            if not image_list:
+                obj_desc = "Image with name: %s" % imagename
+                raise exception.SDKObjectNotExistError(obj_desc=obj_desc,
+                                                   modID=self._module_id)
+        else:
+            with get_flashimage_conn() as conn:
+                result = conn.execute("SELECT * FROM flashimage")
+                image_list = result.fetchall()
+
+        # Map each image record to be a dict, with the key is the field name in
+        # image DB
+        flashimage_keys_list = ['imagename', 'userid', 'vdev', 'imageosdistro',
+                      'disk_size_units', 'comments']
+
+        flashimage_result = []
+        for item in image_list:
+            image_item = dict(zip(flashimage_keys_list, item))
+            flashimage_result.append(image_item)
+        return flashimage_result
+
+    def flashimage_delete_record(self, imagename):
+        """Delete the record of specified imagename from flashimage table"""
+        with get_flashimage_conn() as conn:
+            conn.execute("DELETE FROM flashimage WHERE imagename=?", (imagename,))
 
 
 class GuestDbOperator(object):

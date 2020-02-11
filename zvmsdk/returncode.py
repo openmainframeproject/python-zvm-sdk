@@ -108,6 +108,7 @@ ModRCs = {
     'network': 20,
     'volume': 30,
     'image': 40,
+    'flashimage': 45,
     'monitor': 50,
     'file': 60,
     'sdkserver': 100,
@@ -165,6 +166,9 @@ errors = {
                11: ("Failed to live resize memory of guest: '%(userid)s', "
                    "error: define standby memory failed with "
                    "smt error: '%(err)s'."),
+               12: ("Failed to deploy image to userid: '%(userid)s', "
+                   "flashdiskimage failed with rc: %(unpack_rc)d, "
+                   "error: %(err)s"),
               },
               "Operation on Guest failed"
               ],

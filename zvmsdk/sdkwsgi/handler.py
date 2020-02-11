@@ -103,6 +103,13 @@ ROUTE_LIST = (
     ('/images/{name}/root_disk_size', {
         'GET': image.image_get_root_disk_size,
     }),
+    ('/flashimages', {
+        'POST': image.flashimage_create,
+        'GET': image.flashimage_query
+    }),
+    ('/flashimages/{name}', {
+        'DELETE': image.flashimage_delete
+    }), 
     ('/files', {
         'PUT': file.file_import,
         'POST': file.file_export,

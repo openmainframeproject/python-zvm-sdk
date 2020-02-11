@@ -72,6 +72,7 @@ class SMTClient(object):
         self._NetDbOperator = database.NetworkDbOperator()
         self._GuestDbOperator = database.GuestDbOperator()
         self._ImageDbOperator = database.ImageDbOperator()
+        self._FlashImageDbOperator = database.FlashImageDbOperator()
 
     def _request(self, requestData):
         try:
@@ -621,23 +622,46 @@ class SMTClient(object):
         msg = ('Start to deploy image %(img)s to guest %(vm)s'
                 % {'img': image_name, 'vm': userid})
         LOG.info(msg)
-        image_file = '/'.join([self._get_image_path_by_name(image_name),
-                               CONF.zvm.user_root_vdev])
-        # Unpack image file to root disk
         vdev = vdev or CONF.zvm.user_root_vdev
-        cmd = ['sudo', '/opt/zthin/bin/unpackdiskimage', userid, vdev,
-               image_file]
+
+        # Use flashcopy if available
+        flashimage_info = []
+        haveFlash=True
+        try:
+            flashimage_info = self._FlashImageDbOperator.flashimage_query_record(image_name)
+        except exception.SDKObjectNotExistError:
+            haveFlash=False
+
+        if haveFlash:
+            # Flashcopy disk
+            program = 'flashdiskimage'
+            cmd = ['sudo', ('/opt/zthin/bin/%s' % program), 
+                   flashimage_info[0]['userid'], flashimage_info[0]['vdev'],
+                   userid, vdev]
+            LOG.info(cmd)
+            metadata = 'os_version=%s' % flashimage_info[0]['imageosdistro']
+        else:
+            image_file = '/'.join([self._get_image_path_by_name(image_name),
+                                   CONF.zvm.user_root_vdev])
+            # Unpack image file to root disk
+            program = 'unpackdiskimage'
+            cmd = ['sudo', ('/opt/zthin/bin/%s' % program), userid, vdev,
+                   image_file]
+            image_info = self._ImageDbOperator.image_query_record(image_name)
+            metadata = 'os_version=%s' % image_info[0]['imageosdistro']
+
         with zvmutils.expect_and_reraise_internal_error(modID='guest'):
             (rc, output) = zvmutils.execute(cmd)
         if rc != 0:
-            err_msg = ("unpackdiskimage failed with return code: %d." % rc)
+            err_msg = ("%s failed with return code: %d." % (program, rc))
             err_output = ""
             output_lines = output.split('\n')
             for line in output_lines:
                 if line.__contains__("ERROR:"):
                     err_output += ("\\n" + line.strip())
             LOG.error(err_msg + err_output)
-            raise exception.SDKGuestOperationError(rs=3, userid=userid,
+            rs=3 if program=="unpackdiskimage" else 12
+            raise exception.SDKGuestOperationError(rs=rs, userid=userid,
                                                    unpack_rc=rc,
                                                    err=err_output)
 
@@ -2115,6 +2139,78 @@ class SMTClient(object):
             raise exception.SDKImageOperationError(rs=20, img=image_name)
         disk_size_units = image_info[0]['disk_size_units'].split(':')[0]
         return disk_size_units
+
+    def flashimage_import(self, image_name, userid, vdev, image_meta):
+        """Create a record in the flashimage database for this userid/vdev"""
+        image_info = []
+        try:
+            image_info = self._FlashImageDbOperator.flashimage_query_record(image_name)
+        except exception.SDKObjectNotExistError:
+            msg = ("The image record %s doesn't exist in SDK flashimage database,"
+                   " will create the record now" % image_name)
+            LOG.info(msg)
+
+        # Ensure the specified image is not exist in flashimage DB
+        if image_info:
+            msg = ("The image name %s has already exist in SDK flashimage "
+                   "database, please check if they are same image or consider"
+                   " to use a different image name for import" % image_name)
+            LOG.error(msg)
+            raise exception.SDKImageOperationError(rs=13, img=image_name)
+
+        image_os_version = image_meta['os_version'].lower()
+        userid = userid.upper()
+        vdev = vdev.upper()
+        disk_size_units = self._obtain_disk_size(userid, vdev)
+ 
+        self._FlashImageDbOperator.flashimage_add_record(image_name,
+                                                         userid,
+                                                         vdev,
+                                                         image_os_version,
+                                                         disk_size_units)
+        LOG.info("Flash image %s is imported successfully" % image_name)
+
+    def _obtain_disk_size(self, userid, vdev):
+        size = '???:CYL'
+        
+        # Find a vdev address from the temp range that is available
+        curr = CONF.zvm.temp_vdev_start
+        done=False
+        while(not done):
+            cmd = ['sudo', 'vmcp', ('Q V %s' % curr)]
+            (rc, out) = zvmutils.execute(cmd)
+
+            if out.find('HCPQVD040E')>=0:
+                # Link the disk at this vdev temporarily to find it's size
+                cmd = ['sudo', 'vmcp', ('LINK %s %s %s RR' % (userid, vdev, curr))]
+                (rc, out) = zvmutils.execute(cmd)
+                if rc==0:
+                    cmd = ['sudo', 'vmcp', ('Q V %s' % curr)]
+                    (rc, out) = zvmutils.execute(cmd)
+                    if rc==0:
+                      size = out.split()[5] + ':CYL'
+                      done = True
+
+                cmd = ['sudo', 'vmcp', ('DET %s' % curr)]
+                zvmutils.execute(cmd)
+   
+            # Try the next temporary vdev unless we've hit the end
+            curr = hex(int(curr,16)+1).split('x')[1].upper()
+            if(int(curr,16) > int(CONF.zvm.temp_vdev_end,16)):
+                warn_msg = ('Failed to obtain disk size for %s.%s' %
+                           (userid, vdev))
+                LOG.warning(warn_msg)
+                done = True
+
+        return size;
+        
+    def flashimage_query(self, image_name=None):
+        return self._FlashImageDbOperator.flashimage_query_record(image_name)
+  
+    def flashimage_delete(self, image_name):
+        self._FlashImageDbOperator.flashimage_delete_record(image_name)
+        msg = ('Deleted flash image %s successfully' % image_name)
+        LOG.info(msg)
 
     def punch_file(self, userid, fn, fclass):
         rd = ("changevm %(uid)s punchfile %(file)s --class %(class)s" %

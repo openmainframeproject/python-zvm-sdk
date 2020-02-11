@@ -214,6 +214,18 @@ The length of namelist must no longer than 64.
         help='''
 The port number of remotehost sshd.
 '''),
+    Opt('temp_vdev_start',
+        section='zvm',
+        default='FF00',
+        help='''
+The starting vdev to use for temporary operations.
+'''),
+    Opt('temp_vdev_end',
+        section='zvm',
+        default='FF1F',
+        help='''
+The ending vdev to use for temporary operations.
+'''),
     # image options
     Opt('sdk_image_repository',
         section='image',

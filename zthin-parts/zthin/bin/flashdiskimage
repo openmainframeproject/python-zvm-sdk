@@ -1,0 +1,197 @@
+#!/bin/bash
+###############################################################################
+# Copyright 2017 IBM Corp.
+#
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
+#
+###############################################################################
+# COMPONENT: flashdiskimage                                                   #
+#                                                                             #
+# Deploys a disk image to the specified z/VM guest system and disk using      #
+# FLASHCOPY.                                                                  #
+###############################################################################
+
+source /opt/zthin/lib/zthinshellutils
+
+###############################################################################
+### FUNCTIONS #################################################################
+###############################################################################
+
+function printCMDDescription {
+  : SOURCE: ${BASH_SOURCE}
+  : STACK:  ${FUNCNAME[@]}
+  # @Description:
+  #   Prints a short description of this command.
+  # @Overrides:
+  #   printCMDDescription{} in "zthinshellutils".
+  # @Code:
+  echo -n "Deploys a disk image to the specified z/VM guest system and disk "
+  echo    "using FLASHCOPY."
+} #printCMDDescription{}
+
+###############################################################################
+
+function parseArgs {
+  : SOURCE: ${BASH_SOURCE}
+  : STACK:  ${FUNCNAME[@]}
+  # @Description:
+  #   Parses and checks command-line arguments.
+  # @Code:
+  # Non-local variables in this function are intentionally non-local.
+  isOption -h --help "     Print this help message."   && printHelp='true'
+  isOption -v --verbose "  Print verbose output."      && verbose='-v'
+  isOption -x --debug "    Print debugging output."    && debug='-x'
+
+  getPositionalArg 1 srcUserid
+  getPositionalArg 2 srcVdev
+  getPositionalArg 3 tgtUserid
+  getPositionalArg 4 tgtVdev
+
+  srcUserid=$(echo ${srcUserid} | tr '[:lower:]' '[:upper:]')
+  srcVdev=$(echo ${srcVdev} | tr '[:lower:]' '[:upper:]')
+  tgtUserid=$(echo ${tgtUserid} | tr '[:lower:]' '[:upper:]')
+  tgtVdev=$(echo ${tgtVdev} | tr '[:lower:]' '[:upper:]')
+
+  if [[ $printHelp ]]; then
+    printHelp
+    exit 0
+  fi
+  local badOptions=$(getBadOptions)
+  if [[ $badOptions ]]; then
+    echo "ERROR: ${badOptions}"
+    printCMDUsage
+    exit 10
+  fi
+
+  if [[ ${#args[@]} == 4 && (! $srcUserid || ! $srcVdev || ! $tgtUserid || ! $tgtVdev) ]]; then
+    echo 'ERROR: Missing required parameter.'
+    printCMDUsage
+    exit 11
+  fi
+
+  # Remove old traces beyond the number specified in /var/opt/zthin/settings.conf. If the
+  # specified number is 0, less than 0, or not actually a number, then we skip
+  # this cleanup.
+  if [[ $keepOldTraces -gt 0 ]]; then
+    local removeTraces=$(($(ls -1 /var/log/zthin/flashdiskimage_trace_* | wc -l) -
+                          ${keepOldTraces}))
+    if [[ $removeTraces -gt 0 ]]; then
+      for trace in $(ls -1 /var/log/zthin/flashdiskimage_trace_* |
+                     head -${removeTraces}); do
+        rm -f $trace
+      done
+    fi
+  fi
+
+  timestamp=$(date -u --rfc-3339=ns | sed 's/ /-/;s/\.\(...\).*/.\1/')
+  logFile=/var/log/zthin/flashdiskimage_trace_${timestamp}.txt
+  if [[ $debug ]]; then
+    exec 2> >(tee -a $logFile)
+    set -x
+  else
+    exec 2> $logFile
+    set -x
+  fi
+  inform "flashdiskimage ${args} start time: ${timestamp}"
+
+  echo "SOURCE USER ID: \"$srcUserid\""
+  echo "SOURCE VDEV:    \"$srcVdev\""
+  echo "TARGET USER ID: \"$tgtUserid\""
+  echo "TARGET VDEV:    \"$tgtVdev\""
+  echo ""
+} #parseArgs{}
+
+###############################################################################
+### SET TRAP FOR CLEANUP ON EXIT ##############################################
+###############################################################################
+
+function cleanup {
+  : SOURCE: ${BASH_SOURCE}
+  : STACK:  ${FUNCNAME[@]}
+  # @Description:
+  #   Clean up lock files, disk links, and (if we passed the sanity check but
+  #   failed after creating one or more z/VM user IDs, those newly-created
+  #   user IDs).
+  # @Code:
+  # Nothing to do for help or version options.
+  if [[ $printHelp ]]; then
+    return
+  fi
+
+  if [[ $successful ]]; then
+    inform "Image deployment successful."
+    # Only keep traces of failed disk-image creation attempt unless overriden
+    # by a configuration property.
+    if [[ -e $logFile ]]; then
+      if [[ $saveAllLogs ]]; then
+        inform "A detailed trace can be found at: ${logFile}"
+      else
+        rm -f $logFile
+      fi
+    fi
+  else
+    if [[ ! $printHelp ]]; then
+      echo -e '\nIMAGE DEPLOYMENT FAILED.'
+      [[ $logFile ]] && inform "A detailed trace can be found at: ${logFile}"
+    fi
+  fi
+
+  # Make sure we've released our connection to the source and target disks.
+  disconnectDiskCP $srcUserid $srcVdev
+  disconnectDiskCP $tgtUserid $tgtVdev
+
+  timestamp=$(date -u --rfc-3339=ns | sed 's/ /-/;s/\.\(...\).*/.\1/')
+  inform "flashdiskimage end time: ${timestamp}"
+} #cleanup{}
+
+trap 'cleanup' EXIT
+
+trap "echo -e '\nExecution interrupted. Exiting...\n'; exit" SIGINT
+
+###############################################################################
+### START EXECUTION ###########################################################
+###############################################################################
+
+parseArgs
+
+inform "Starting FLASHCOPY of ${srcUserid}.${srcVdev} to ${tgtUserid}.${tgtVdev}"
+connectDiskCP $srcUserid $srcVdev "RR" srcAlias
+if [[ $? -ne 0 ]]; then
+  echo -e "Failed to link source disk"
+  exit 2 
+fi
+
+connectDiskCP $tgtUserid $tgtVdev "MR" tgtAlias
+if [[ $? -ne 0 ]]; then
+  echo -e "Failed to link target disk"
+  exit 3 
+fi
+
+# Retry FLASHCOPY on HCPCMM296E with code = AE
+retry=60
+while [[ retry -gt 0 ]]; do
+  out=$(vmcp "FLASHCOPY $srcAlias 0 END $tgtAlias 0 END")
+  cnt=$(echo $out | grep HCPCMM296E | grep "code = AE" | wc -l)
+  echo $out
+  if [[ $cnt -gt 0 ]]; then
+    retry=$((retry-1))
+    sleep 5 
+  else
+    successful='true'
+    retry=0
+  fi
+done
+
+###############################################################################
+### END OF SCRIPT #############################################################
+###############################################################################

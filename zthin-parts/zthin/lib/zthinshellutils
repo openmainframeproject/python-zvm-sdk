@@ -591,6 +591,90 @@ function connectFcp {
 
 ###############################################################################
 
+function connectDiskCP {
+  : SOURCE: ${BASH_SOURCE}
+  : STACK:  ${FUNCNAME[@]}
+  # @Description:
+  #   Links to (or attaches) the disk at the specified virtual device address
+  #   (on the system being captured/deployed) using the specified link mode (or
+  #   'RR' if a mode is not specified).
+  # @Returns:
+  #   0 if the connection was successful.
+  #   1 if there was an error with attaching a dedicated disk.
+  #   2 if there was an error with linking to a minidisk.
+  #   5 if we time out waiting for the disk connection lock.
+  # @Parameters:
+  local userID=$1            # ID of disk-owning z/VM user.
+  local vdev=$2              # Virtual device address of disk to connect to.
+  local mode=$3              # The disk linking mode.
+  local -n localAlias=$4     # Local disk alias
+
+  # @Code:
+  [[ $mode ]] || mode='rr'
+
+  # Obtain the disk connection lock.
+  local attempts=1
+  while [[ $(mkdir $diskConnectionLock; echo $?) -ne 0 ]]; do
+    if [[ $attempts -gt 120 ]]; then
+      return 5
+    fi
+    if [[ $(( $attempts % 30 )) -eq 0 ]]; then
+      warn "Waiting on lock: ${diskConnectionLock}" | sed 's/^/  /'
+    fi
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+
+  # Keep a file in /tmp listing previously-used aliases, to avoid always
+  # using different aliases (which makes udev keep incrementing addresses
+  # in the /dev/dasd[letter][number] scheme). Try each of those aliases
+  # before generating new ones.
+  while read line; do
+    if [[ $(vmcp "query virtual ${line}" 2>&1 |
+            grep 'HCPQVD040E') ]]; then
+      localAlias=$line
+      break
+    fi
+  done < $diskLinkingAliases
+
+  # Since none of the already-used aliases are free, keep picking a random
+  # virtual device address until one is found that hasn't already been taken.
+  while [[ $(vmcp "query virtual ${localAlias}" 2>&1 |
+             grep 'HCPQVD040E' |
+             wc -l) -eq 0 ]]; do
+    localAlias=$(uuidgen | sed 's/\(....\).*/\1/')
+  done
+
+  # Record the alias we used, both in the list of used aliases and in the list
+  # of aliases currently in use.
+  if [[ ! $(grep "${localAlias}" $diskLinkingAliases) ]]; then
+    echo $localAlias >> $diskLinkingAliases
+  fi
+  echo "${userID} ${vdev} AS ${localAlias}" >> $currentDiskAliases
+
+  local rc=0
+  local cmdResp=$(vmcp "link $userID $vdev as $localAlias $mode" 2>&1)
+  local error=$(echo "$cmdResp" | grep '^Error:')
+
+  # We can at this point remove the disk connection lock, since we have
+  # reserved its channel ID alias by linking it and made all required
+  # alterations to the alias listing file.
+  rmdir $diskConnectionLock
+
+  # Check for link errors
+  if [[ $error ]]; then
+    local errorInfo=$(echo "$cmdResp" | grep '^HCP')
+    printError "Unable to link $userID $vdev disk. $errorInfo"
+    # Note: We will do a detach just in case we linked it in read mode.
+    vmcp "detach $localAlias"
+    local rc=2
+  fi
+
+  return $rc
+} #connectDiskCP{}
+
+###############################################################################
+
 function connectDisk {
   : SOURCE: ${BASH_SOURCE}
   : STACK:  ${FUNCNAME[@]}
@@ -616,65 +700,8 @@ function connectDisk {
                              # raw_track_access mode. Otherwise existing mode
                              # is used.
   # @Code:
-  [[ $mode ]] || mode='rr'
-
-  # Obtain the disk connection lock.
-  local attempts=1
-  while [[ $(mkdir $diskConnectionLock; echo $?) -ne 0 ]]; do
-    if [[ $attempts -gt 120 ]]; then
-      return 5
-    fi
-    if [[ $(( $attempts % 30 )) -eq 0 ]]; then
-      warn "Waiting on lock: ${diskConnectionLock}" | sed 's/^/  /'
-    fi
-    attempts=$((attempts + 1))
-    sleep 1
-  done
-
-  # Keep a file in /tmp listing previously-used aliases, to avoid always
-  # using different aliases (which makes udev keep incrementing addresses
-  # in the /dev/dasd[letter][number] scheme). Try each of those aliases
-  # before generating new ones.
-  while read line; do
-    if [[ $(vmcp "query virtual ${line}" 2>&1 |
-            grep 'HCPQVD040E') ]]; then
-      local alias=$line
-      break
-    fi
-  done < $diskLinkingAliases
-
-  # Since none of the already-used aliases are free, keep picking a random
-  # virtual device address until one is found that hasn't already been taken.
-  while [[ $(vmcp "query virtual ${alias}" 2>&1 |
-             grep 'HCPQVD040E' |
-             wc -l) -eq 0 ]]; do
-    local alias=$(uuidgen | sed 's/\(....\).*/\1/')
-  done
-
-  # Record the alias we used, both in the list of used aliases and in the list
-  # of aliases currently in use.
-  if [[ ! $(grep "${alias}" $diskLinkingAliases) ]]; then
-    echo $alias >> $diskLinkingAliases
-  fi
-  echo "${userID} ${vdev} AS ${alias}" >> $currentDiskAliases
-
-  local rc=0
-  local cmdResp=$(vmcp "link $userID $vdev as $alias $mode" 2>&1)
-  local error=$(echo "$cmdResp" | grep '^Error:')
-
-  # We can at this point remove the disk connection lock, since we have
-  # reserved its channel ID alias by linking it and made all required
-  # alterations to the alias listing file.
-  rmdir $diskConnectionLock
-
-  # Check for link errors
-  if [[ $error ]]; then
-    local errorInfo=$(echo "$cmdResp" | grep '^HCP')
-    printError "Unable to link $userID $vdev disk. $errorInfo"
-    # Note: We will do a detach just in case we linked it in read mode.
-    vmcp "detach $alias"
-    local rc=2
-  fi
+  connectDiskCP $userID $vdev $mode alias
+  rc = $?
 
   # Make sure device channel isn't black-listed..
   if [[ $rc -eq 0 ]]; then
@@ -896,6 +923,61 @@ function undedicateFcp {
 
 ###############################################################################
 
+function disconnectDiskCP {
+  : SOURCE: ${BASH_SOURCE}
+  : STACK:  ${FUNCNAME[@]}
+  # @Description:
+  #   Detaches the disk at the specified virtual device address.
+  # @Returns:
+  #   0 if the disconnection was successful.
+  #   3 if there was an error with detaching the disk.
+  #   4 if we time out waiting for the disk connection lock.
+  # @Parameters:
+  local userID=$1
+  local disk=$2
+  # @Code:
+  local alias=$(getDiskAlias $userID $disk)
+  local rc=0
+
+  # Obtain the disk connection lock.
+  local attempts=1
+  while [[ $(mkdir $diskConnectionLock; echo $?) -ne 0 ]]; do
+    if [[ $attempts -gt 360 ]]; then
+      # Waited 6 minutes (360 seconds, 3 times max of connectDisk), give up.
+      return 4
+    fi
+    if [[ $(( $attempts % 30 )) -eq 0 ]]; then
+      warn "Waiting on lock: ${diskConnectionLock}" | sed 's/^/  /'
+    fi
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+
+  # Detach the disk.
+  if [[ $(vmcp 'query virtual dasd' |
+          grep -i "^DASD $alias" | wc -l) -eq 1 ]]; then
+    local error=$(vmcp detach $alias 2>&1 | grep '^Error:')
+    if [[ $error ]]; then
+      warn "Disk Detach $error"
+      local rc=3
+    fi
+  fi
+
+  # If the disk is no longer attached to the zthin virtual machine then remove it
+  # from the current disk aliases.
+  if [[ $(vmcp 'query virtual dasd' |
+          grep -i "^DASD $alias" | wc -l) -eq 0 ]]; then
+    sed -i "/${userID} ${disk} AS ${alias}/d" \
+           $currentDiskAliases
+  fi
+
+  # Release the disk connection lock and return.
+  rmdir $diskConnectionLock
+  return $rc
+} #disconnectDiskCP{}
+
+###############################################################################
+
 function disconnectDisk {
   : SOURCE: ${BASH_SOURCE}
   : STACK:  ${FUNCNAME[@]}
@@ -946,45 +1028,9 @@ function disconnectDisk {
     fi
   fi
 
-  # Obtain the disk connection lock.
-  local attempts=1
-  while [[ $(mkdir $diskConnectionLock; echo $?) -ne 0 ]]; do
-    if [[ $attempts -gt 360 ]]; then
-      # Waited 6 minutes (360 seconds, 3 times max of connectDisk), give up.
-      return 4
-    fi
-    if [[ $(( $attempts % 30 )) -eq 0 ]]; then
-      warn "Waiting on lock: ${diskConnectionLock}" | sed 's/^/  /'
-    fi
-    attempts=$((attempts + 1))
-    sleep 1
-  done
+  disconnectDiskCP $userID $disk
+  rc=$?
 
-  # Detach the disk.
-  if [[ $(vmcp 'query virtual dasd' |
-          grep -i "^DASD $alias" | wc -l) -eq 1 ]]; then
-    local error=$(vmcp detach $alias 2>&1 | grep '^Error:')
-    if [[ $error ]]; then
-      warn "Disk Detach $error"
-      local rc=3
-    fi
-  fi
-
-  # Remove the left partition link
-  if [[ -L /dev/disk/by-path/ccw-0.0.${alias}-part1 ]]; then
-    rm -f /dev/disk/by-path/ccw-0.0.${alias}-part1
-  fi
-
-  # If the disk is no longer attached to the zthin virtual machine then remove it
-  # from the current disk aliases.
-  if [[ $(vmcp 'query virtual dasd' |
-          grep -i "^DASD $alias" | wc -l) -eq 0 ]]; then
-    sed -i "/${userID} ${disk} AS ${alias}/d" \
-           $currentDiskAliases
-  fi
-
-  # Release the disk connection lock and return.
-  rmdir $diskConnectionLock
   return $rc
 } #disconnectDisk{}
 
