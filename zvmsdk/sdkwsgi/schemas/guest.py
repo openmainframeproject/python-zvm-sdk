@@ -201,6 +201,17 @@ deploy = {
     'additionalProperties': False,
 }
 
+send = {
+    'type': 'object',
+    'properties': {
+        'transportfiles': {'type': ['string']},
+        'remotehost': parameter_types.remotehost,
+        'configparms': parameter_types.config_parms,
+        'executeimmediate': parameter_types.boolean
+    },
+    'required': ['transportfiles'],
+    'additionalProperties': False,
+}
 
 capture = {
     'type': 'object',
