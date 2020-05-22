@@ -331,6 +331,9 @@ class VMOps(object):
     def guest_list(self):
         return self._smtclient.get_vm_list()
 
+    def guest_list_hypervisor(self):
+        return self._smtclient.get_all_user_direct()
+
     def get_definition_info(self, userid, **kwargs):
         check_command = ["nic_coupled"]
         direct_info = self._smtclient.get_user_direct(userid)

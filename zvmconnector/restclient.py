@@ -109,6 +109,12 @@ def req_guest_list(start_index, *args, **kwargs):
     return url, body
 
 
+def req_guest_list_hypervisor(start_index, *args, **kwargs):
+    url = '/guests/hypervisor'
+    body = None
+    return url, body
+
+
 def req_guest_delete(start_index, *args, **kwargs):
     url = '/guests/%s'
     body = None
@@ -593,6 +599,11 @@ DATABASE = {
         'args_required': 0,
         'params_path': 0,
         'request': req_guest_list},
+    'guest_list_hypervisor': {
+        'method': 'GET',
+        'args_required': 0,
+        'params_path': 0,
+        'request': req_guest_list_hypervisor},
     'guest_inspect_stats': {
         'method': 'GET',
         'args_required': 1,

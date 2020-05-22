@@ -82,6 +82,11 @@ class VMHandler(object):
         info = self.client.send_request('guest_list')
         return info
 
+    def list_hypervisor(self):
+        # list all guest on the given hypervisor
+        info = self.client.send_request('guest_list_hypervisor')
+        return info
+
     @validation.query_schema(guest.userid_list_query)
     def get_power_state_real(self, req, userid):
         info = self.client.send_request('guest_get_power_state_real', userid)
@@ -622,6 +627,19 @@ def guest_list(req):
     req.response.status = 200
     return req.response
 
+@util.SdkWsgify
+@tokens.validate
+def guest_list_hypervisor(req):
+    def _guest_list_hypervisor():
+        action = get_handler()
+        return action.list_hypervisor()
+
+    info = _guest_list_hypervisor()
+    info_json = json.dumps(info)
+    req.response.body = utils.to_utf8(info_json)
+    req.response.content_type = 'application/json'
+    req.response.status = 200
+    return req.response
 
 @util.SdkWsgify
 @tokens.validate

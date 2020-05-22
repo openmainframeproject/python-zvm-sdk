@@ -41,6 +41,9 @@ ROUTE_LIST = (
         'POST': guest.guest_create,
         'GET': guest.guest_list,
     }),
+    ('/guests/hypervisor', {
+        'GET': guest.guest_list_hypervisor
+    }),
     ('/guests/stats', {
         'GET': guest.guest_get_stats
     }),

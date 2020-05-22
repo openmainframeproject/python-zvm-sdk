@@ -256,6 +256,14 @@ class SDKAPI(object):
         with zvmutils.log_and_reraise_sdkbase_error(action):
             return self._vmops.guest_list()
 
+    def guest_list_hypervisor(self):
+        """list names of all the VMs on this hypervisor.
+        :returns: names of the vm on this hypervisor, in a list.
+        """
+        action = "list guests on hypervisor"
+        with zvmutils.log_and_reraise_sdkbase_error(action):
+            return self._vmops.guest_list_hypervisor()
+
     def host_get_info(self):
         """ Retrieve host information including host, memory, disk etc.
 
