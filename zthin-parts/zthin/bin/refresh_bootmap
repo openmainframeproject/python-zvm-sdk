@@ -1,6 +1,6 @@
 #!/bin/bash
 ###############################################################################
-# Copyright 2020 IBM Corp.
+# Copyright 2021 IBM Corp.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -86,7 +86,7 @@ function cleanup_fcpdevices {
   # if it doesn't exist, the $multipath_enabled will be None.
   if [[ $multipath_enabled == 1 ]]; then
     inform "Cleaning up multipath bindings and wwids."
-    multipath_output=$(multipath -ll 2>&1)
+    multipath_output=$(multipath -l 2>&1)
     inform "multipath output: ${multipath_output}."
     # delete the wwid and refresh multipath map
     map_name=$(multipath -l $wwid -v 1)
@@ -96,63 +96,19 @@ function cleanup_fcpdevices {
         wwid_out=`multipath -w $map_name 2>&1`
         rc1=$?
         # add retry according to multipath -h:
-        # -R num: number of times to retry removes of in-use devices 
+        # -R num: number of times to retry removes of in-use devices
         flush_out=`multipath -R 3 -f $map_name 2>&1`
         rc2=$?
         if [[ ( $rc1 -ne 0 ) || ( $rc2 -ne 0 ) ]]; then
-            inform "Failed to cleanup $map_name. wwid rc1: $rc1, output: $wwid_out. 
+            inform "Failed to cleanup $map_name. wwid rc1: $rc1, output: $wwid_out.
             flush rc2: $rc2, output: $flush_out."
         else
             inform "multipath $map_name flushed successfully."
         fi
         # cleanup multipath leftover if any
         if [[ ( $rc2 -ne 0 ) ]]; then
-            inform 'start: clean multipath leftover'
-            cmd_out=$(dmsetup info)
-            inform "dmsetup info output: ${cmd_out}."
-            # check whether any path exists for current multipath device
-            # path_num examples:
-            #   0: if no path
-            #   1: if 1 path exists
-            #   2: if 2 paths exist
-            path_num=$(multipathd show map $map_name json | grep -c '"dev"')
-            # delete paths if any
-            if [[ ( $path_num -ne 0 ) ]]; then
-                # leftover_paths examples:
-                #   sda    : if 1 path exists
-                #   sda sdb: if 2 paths exist
-                leftover_paths=$(multipathd show map $map_name json | awk '/\"dev\"/ {split($3,a,"\""); print a[2]}')
-                inform "leftover_paths output: ${leftover_paths}."
-                for p in ${leftover_paths[@]}
-                do
-                    echo offline > /sys/block/$p/device/state
-                    echo 1 > /sys/block/$p/device/delete
-                    inform 'path $p deleted'
-                done
-            fi
-            # delete multipath device itself
-            # first, try multipath -f. 
-            cmd_out=$(multipath -f $map_name 2>&1)
-            # if multipath device already gone after deleting paths above,
-            # then rc is 0
-            rc=$?
-            inform "multipath -f output: ${cmd_out}."
-            if [[ ( $rc -ne 0 ) ]]; then
-                # second, try dmsetup suspend/remove
-                cmd_out=$(dmsetup suspend $map_name 2>&1)
-                inform "dmsetup suspend output: ${cmd_out}."
-                cmd_out=$(dmsetup remove $map_name -f 2>&1)
-                rc=$?
-                inform "dmsetup remove output: ${cmd_out}."
-                if [[ ( $rc -ne 0 ) ]]; then
-                    # third, try multipath -f again
-                    cmd_out=$(multipath -f $map_name 2>&1)
-                    inform "multipath -f output: ${cmd_out}."
-                fi
-            fi
-            inform 'end: clean multipath leftover'
-            cmd_out=$(dmsetup info)
-            inform "dmsetup info output: ${cmd_out}." 
+            # cleanup leftover
+            do_cleanup_multipath_leftover $map_name
         fi
     else
         inform "Failed to get the multipath map name or map name is null for wwid: $wwid. rc is $rc."
@@ -162,7 +118,7 @@ function cleanup_fcpdevices {
     fi
     lszfcp_output=$(lszfcp -HD 2>&1)
     inform "lszfcp output: ${lszfcp_output}"
-    multipath_output=$(multipath -ll 2>&1)
+    multipath_output=$(multipath -l 2>&1)
     inform "multipath output: ${multipath_output}."
   fi
   inform "Finish refreshing multipath bindings."
@@ -189,6 +145,122 @@ function cleanup_fcpdevices {
   done
 } #cleanup_fcpdevices
 
+function cleanup_multipath_leftover {
+    : SOURCE: ${BASH_SOURCE}
+    : STACK:  ${FUNCNAME[@]}
+    # @Description:
+    #   Cleanup multipath leftover
+    # @Returns:
+    #   None
+    
+    # all_multipath_devices example:
+    # mpathc        : if only one device
+    # mpathz mpathab: if two devices
+    all_multipath_devices=$(multipath -l -v1)
+    rc=$?
+    inform "all_multipath_devices output: ${all_multipath_devices}."
+    if [[ ( $rc -eq 0 ) && ($all_multipath_devices != '') ]]; then
+        for map_name in ${all_multipath_devices[@]}
+        do
+            # Each map_name corresponds to one dm-X
+            # examples: dm-0, dm-1, dm-2
+            dm_name=$(multipathd show map $map_name format "%d")
+            # If leftover exists,
+            # 'multipath -C device' exits with error "no usable paths found".
+            # It is true for both head-only and faulty-path leftovers
+            msg=$(multipath -C /dev/$dm_name 2>&1)
+            if [[ $msg =~ 'no usable paths' ]]; then
+                # clean leftover
+                do_cleanup_multipath_leftover $map_name
+            fi
+        done
+    fi
+} # cleanup_multipath_leftover
+
+function do_cleanup_multipath_leftover {
+    : SOURCE: ${BASH_SOURCE}
+    : STACK:  ${FUNCNAME[@]}
+    # @Description:
+    #   Cleanup multipath leftover
+    # @Parameters:
+    #   map_name: the multipath device name
+    # @Returns:
+    #   None
+    local map_name=$1
+  
+    inform 'start: clean multipath leftover'
+    cmd_out=$(dmsetup info $map_name)
+    inform "dmsetup info output: ${cmd_out}."
+    # check whether any path exists for current multipath device
+    # path_num examples:
+    #   0: if no path
+    #   1: if 1 path exists
+    #   2: if 2 paths exist
+    path_num=$(multipathd show map $map_name json | grep -c '"dev"')
+    # delete paths if any
+    if [[ ( $path_num -ne 0 ) ]]; then
+        # leftover_paths examples:
+        #   sda    : if 1 path exists
+        #   sda sdb: if 2 paths exist
+        leftover_paths=$(multipathd show map $map_name json | awk '/\"dev\"/ {split($3,a,"\""); print a[2]}')
+        inform "leftover_paths output: ${leftover_paths}."
+        for p in ${leftover_paths[@]}
+        do
+            # delele path
+            echo offline > /sys/block/$p/device/state
+            echo 1 > /sys/block/$p/device/delete
+            rc=$?
+            if [[ ( $rc -eq 0 ) ]]; then
+                inform "path $p deleted successfully."
+            else
+                inform "path $p deletion failed. Retry once."
+                # retry delele path
+                sleep 0.5
+                echo 1 > /sys/block/$p/device/delete
+                rc=$?
+                if [[ ( $rc -eq 0 ) ]]; then
+                    inform "path $p deleted successfully."
+                fi
+            fi
+            
+        done
+    fi
+    # delete multipath device itself
+    # first, try multipath -f. 
+    cmd_out=$(multipath -R 3 -f $map_name 2>&1)
+    # if multipath device already gone after deleting paths above,
+    # then rc is 0
+    rc=$?
+    inform "multipath -f output: ${cmd_out}."
+    if [[ ( $rc -ne 0 ) ]]; then
+        # second, try dmsetup suspend/remove
+        cmd_out=$(dmsetup suspend $map_name 2>&1)
+        inform "dmsetup suspend output: ${cmd_out}."
+        cmd_out=$(dmsetup remove $map_name -f 2>&1)
+        rc=$?
+        inform "dmsetup remove output: ${cmd_out}."
+        if [[ ( $rc -ne 0 ) ]]; then
+            # add retry once
+            inform "dmsetup remove failed. Retry once."
+            # retry delele path
+            sleep 0.5
+            dmsetup remove $map_name -f 2>&1
+            rc=$?
+            if [[ ( $rc -eq 0 ) ]]; then
+                inform "dmsetup remove successfully."
+            else
+                # third, try multipath -f again
+                cmd_out=$(multipath -R 3 -f $map_name 2>&1)
+            fi
+            inform "multipath -f output: ${cmd_out}."
+        fi
+    fi
+    inform 'end: clean multipath leftover'
+    cmd_out=$(dmsetup info $map_name)
+    inform "dmsetup info output: ${cmd_out}."   
+  
+} # do_cleanup_multipath_leftover
+
 function printCMDExamples {
   : SOURCE: ${BASH_SOURCE}
   : STACK:  ${FUNCNAME[@]}
@@ -199,7 +271,7 @@ function printCMDExamples {
   # @Code:
   echo "Example:
   ./refresh_bootmap.sh --fcpchannel="5d71" --wwpn="5005076802100C1B" --lun=0000000000000000
-  ./refresh_bootmap.sh --fcpchannel="5d71,5d72" --wwpn="5005076802100C1B,5005076802200C1B,5005076802300C1B,5005076802400C1B,5005076802400C1A,5005076802300C1A,5005076802200C1A,5005076802100C1A" --lun=0000000000000000" 
+  ./refresh_bootmap.sh --fcpchannel="5d71,5d72" --wwpn="5005076802100C1B,5005076802200C1B,5005076802300C1B,5005076802400C1B,5005076802400C1A,5005076802300C1A,5005076802200C1A,5005076802100C1A" --lun=0000000000000000"
 } #printCMDDescription
 
 function parseArgs {
@@ -251,7 +323,7 @@ function parseArgs {
       shift # past argument with no value
       ;;
       *)
-      printError "Unknow option: $i." 
+      printError "Unknow option: $i."
       exit 3
       ;;
   esac
@@ -301,8 +373,8 @@ function printLogs {
   # ls /dev/disk/by-id
   disk_by_id_folder=$(ls /dev/disk/by-id/)
   inform "/dev/disk/by-id/ folder content: ${disk_by_id_folder}."
-  # multipath -ll
-  multipath_output=$(multipath -ll 2>&1)
+  # multipath -l
+  multipath_output=$(multipath -l 2>&1)
   inform "multipath output: ${multipath_output}."
 } #printLogs
 
@@ -321,36 +393,36 @@ function checkMultipath {
 } #checkMultipath
 
 function truncaterdzfcp {
-	: SOURCE: ${BASH_SOURCE}
-	: STACK:  ${FUNCNAME[@]}
-	# @Description:
-	#   select 8 paths from all the valid paths to get the rd.zfcp kernel command line
-	#   select combinations based on the rule: 
-	#   each FCP should be covered by at least one path in rd.zfcp so that all the FCPs
-	#   will be automatically online when vm is started
+    : SOURCE: ${BASH_SOURCE}
+    : STACK:  ${FUNCNAME[@]}
+    # @Description:
+    #   select 8 paths from all the valid paths to get the rd.zfcp kernel command line
+    #   select combinations based on the rule:
+    #   each FCP should be covered by at least one path in rd.zfcp so that all the FCPs
+    #   will be automatically online when vm is started
     rd_zfcp=""
     wwpn_idx=0
     selected_paths=0
     valid_fcps=$(echo ${!paths_dict[*]})
-	while [[ $selected_paths -lt 8 ]]
-	do
-		inform "checking with wwpn_index: $wwpn_idx."
-		# for each fcp, get the wwpn corresponding to wwpn_idx
-		for fcp in ${valid_fcps[@]}
-		do
-			wwpns=(${paths_dict[$fcp]})
-			if [[ $wwpn_idx -lt ${#wwpns[@]} ]]; then
-				wwpn=${wwpns[$wwpn_idx]}
-				rd_zfcp+="rd.zfcp=0.0."$fcp,0x$wwpn,$lun" "
-				((selected_paths=$selected_paths+1))
-			fi
-			# break when 8 paths found
-			if [[ $selected_paths -eq 8 ]]; then
-				break
-			fi
-		done
-		((wwpn_idx=$wwpn_idx+1))
-	done
+    while [[ $selected_paths -lt 8 ]]
+    do
+        inform "checking with wwpn_index: $wwpn_idx."
+        # for each fcp, get the wwpn corresponding to wwpn_idx
+        for fcp in ${valid_fcps[@]}
+        do
+            wwpns=(${paths_dict[$fcp]})
+            if [[ $wwpn_idx -lt ${#wwpns[@]} ]]; then
+                wwpn=${wwpns[$wwpn_idx]}
+                rd_zfcp+="rd.zfcp=0.0."$fcp,0x$wwpn,$lun" "
+                ((selected_paths=$selected_paths+1))
+            fi
+            # break when 8 paths found
+            if [[ $selected_paths -eq 8 ]]; then
+                break
+            fi
+        done
+        ((wwpn_idx=$wwpn_idx+1))
+    done
 }
 
 function refreshZIPL {
@@ -374,7 +446,7 @@ function refreshZIPL {
 
   if [[ ! -e "$devNode" ]]; then
     inform "devNode file ${devNode} not exist yet. Retrying..."
-    sleepTimes=".001 .01 .1 .5 1 2 3 5 8 15 22 34 60 90 120"
+    sleepTimes=".001 .01 .1 .5 1 2 3 5 8 15 22 34 60"
     # retry, while waiting various durations
     for seconds in $sleepTimes; do
       sleep $seconds
@@ -446,13 +518,13 @@ function refreshZIPL {
       -e 's/\s.*$//'`
     os=$os$version
   fi
-  # Prepare the new rd.zfcp parameter value 
+  # Prepare the new rd.zfcp parameter value
   # Due to the kernel command line length limitation of RHEL, we will limit the rd.zfcp
   # items count to 8. so if the valid paths count is greater than 8, we need to do truncation.
   # otherwise we can use the rd_zfcp string we get while finding the valid paths.
   if [[ $paths_count -gt 8 ]]; then
-  	inform "valid paths count $paths_count is greater than 8, do truncation to get the rd.zfcp parameter."
-  	truncaterdzfcp
+      inform "valid paths count $paths_count is greater than 8, do truncation to get the rd.zfcp parameter."
+      truncaterdzfcp
   fi
   inform "Final rd.zfcp value is: $rd_zfcp."
 
@@ -460,19 +532,19 @@ function refreshZIPL {
   if [[ $os == rhel7* ]]; then
     inform "Refresh $os zipl."
     zipl_conf='etc/zipl.conf'
-    
+
     ### Delete all items start with "rd.zfcp="
     sed -ri 's/rd.zfcp=\S+\s*[[:space:]]//g' ${deviceMountPoint}/$zipl_conf
-    
+
     # Remove quote
     sed -i 's/\"$//g' ${deviceMountPoint}/$zipl_conf
-    
+
     # Remove quote
     sed -i 's/[ \t]*$//g' ${deviceMountPoint}/$zipl_conf
-    
+
     # Append rd.zfcp= string to "parameters=" line.
     sed -i "/^[[:space:]]parameters=/ s/$/ $rd_zfcp/" ${deviceMountPoint}/$zipl_conf
-    
+
     # Append quote to "parameters=" line
     sed -i "/^[[:space:]]parameters=/ s/$/\"/" ${deviceMountPoint}/$zipl_conf
 
@@ -578,6 +650,9 @@ function refreshFCPBootmap {
 
   # Check whether multipath is enabled by checking the multipathd service
   checkMultipath
+  
+  # Cleanup multipath leftover if any
+  cleanup_multipath_leftover
 
   # Register EXIT sigual for cleanup FCP devices.
   trap 'cleanup_fcpdevices' EXIT
@@ -711,9 +786,9 @@ function refreshFCPBootmap {
   valid_paths_str=""
   for fcp in $(echo ${!paths_dict[*]})
   do
-	wwpns=${paths_dict[$fcp]}
-	if [[ -z $valid_paths_str ]]; then
-	    valid_paths_str=$fcp":"$wwpns
+    wwpns=${paths_dict[$fcp]}
+    if [[ -z $valid_paths_str ]]; then
+        valid_paths_str=$fcp":"$wwpns
     else
         valid_paths_str+=","$fcp":"$wwpns
     fi
@@ -727,6 +802,15 @@ function refreshFCPBootmap {
   wwid=""
   if [[ $multipath_enabled == 1 ]]; then
       wwid=`/usr/lib/udev/scsi_id --whitelisted $diskPath 2> /dev/null`
+      map_name=$(multipath -l $wwid -v 1)
+      # load partition manually in case of 'skip_kpartx yes' in multipath.conf 
+      kpartx -a /dev/mapper/$map_name
+      rc=$?
+      if [[ ( $rc -eq 0 ) ]]; then
+          inform "Load partition successfully."
+      else
+          inform "Load partition failed."
+      fi
       devNode="/dev/disk/by-id/dm-uuid-part1-mpath-$wwid"
       inform "Multipath is enabled, using multipath devNode: $devNode."
   else
@@ -735,7 +819,7 @@ function refreshFCPBootmap {
       # For blockdev command use.
       inform "Multipath is not enabled, using single path devNode: $devNode."
   fi
-  
+
   refreshZIPL $devNode
 } #refreshFCPBootmap
 
@@ -753,7 +837,7 @@ function refreshBootMap {
   else
     printError "Device type not recognised."
     exit 11
-  fi 
+  fi
 } #refreshBootMap
 
 
