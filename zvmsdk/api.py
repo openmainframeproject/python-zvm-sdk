@@ -1214,7 +1214,6 @@ class SDKAPI(object):
         with zvmutils.log_and_reraise_sdkbase_error(action):
             return self._vmops.delete_vm(userid)
 
-    @check_guest_exist()
     def guest_inspect_stats(self, userid_list):
         """Get the statistics including cpu and mem of the guests
 
@@ -1258,7 +1257,6 @@ class SDKAPI(object):
         with zvmutils.log_and_reraise_sdkbase_error(action):
             return self._monitor.inspect_stats(userid_list)
 
-    @check_guest_exist()
     def guest_inspect_vnics(self, userid_list):
         """Get the vnics statistics of the guest virtual machines
 
