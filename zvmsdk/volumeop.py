@@ -330,12 +330,20 @@ class FCP(object):
            The format comes from the response of xCAT, do not support
            arbitrary format.
         """
-        if isinstance(init_info, list) and (len(init_info) == 5):
-            self._dev_no = self._get_dev_number_from_line(init_info[0])
-            self._dev_status = self._get_dev_status_from_line(init_info[1])
-            self._npiv_port = self._get_wwpn_from_line(init_info[2])
-            self._chpid = self._get_chpid_from_line(init_info[3])
-            self._physical_port = self._get_wwpn_from_line(init_info[4])
+        if isinstance(init_info, list) and len(init_info) >= 5:
+            for line in init_info:
+                if 'FCP device number' in line:
+                    self._dev_no = self._get_dev_number_from_line(line)
+                elif 'Status' in line:
+                    self._dev_status = self._get_dev_status_from_line(line)
+                elif 'NPIV world wide port number' in line:
+                    self._npiv_port = self._get_wwpn_from_line(line)
+                elif 'Channel path ID' in line:
+                    self._chpid = self._get_chpid_from_line(line)
+                elif 'Physical world wide port numbe' in line:
+                    self._physical_port = self._get_wwpn_from_line(line)
+                else:
+                    LOG.info('Unknown line in FCP information %s', line)
 
     def get_dev_no(self):
         return self._dev_no
@@ -399,34 +407,15 @@ class FCPManager(object):
         complete_fcp_set = set()
         for path, fcp_set in self._fcp_path_mapping.items():
             complete_fcp_set = complete_fcp_set | fcp_set
-        fcp_info = self._get_all_fcp_info(assigner_id)
-        lines_per_item = 5
         # after process, _fcp_pool should be a list include FCP ojects
         # whose FCP ID are from CONF.volume.fcp_list and also should be
         # found in fcp_info
-        num_fcps = len(fcp_info) // lines_per_item
-        for n in range(0, num_fcps):
-            fcp_init_info = fcp_info[(5 * n):(5 * (n + 1))]
-            fcp = FCP(fcp_init_info)
-            dev_no = fcp.get_dev_no()
-            if dev_no in complete_fcp_set:
-                if fcp.is_valid():
-                    self._fcp_pool[dev_no] = fcp
-                else:
-                    errmsg = ("Find an invalid FCP device with properties {"
-                              "dev_no: %(dev_no)s, "
-                              "NPIV_port: %(NPIV_port)s, "
-                              "CHPID: %(CHPID)s, "
-                              "physical_port: %(physical_port)s} !") % {
-                                  'dev_no': fcp.get_dev_no(),
-                                  'NPIV_port': fcp.get_npiv_port(),
-                                  'CHPID': fcp.get_chpid(),
-                                  'physical_port': fcp.get_physical_port()}
-                    LOG.warning(errmsg)
-            else:
-                # normal, FCP not used by cloud connector at all
-                msg = "Found a fcp %s not in fcp_list" % dev_no
-                LOG.debug(msg)
+        filtered_fcp_info = {}
+        all_fcp_info = self.get_all_fcp_pool(assigner_id)
+        for fcp in all_fcp_info.keys():
+            if fcp in complete_fcp_set:
+                filtered_fcp_info[fcp] = all_fcp_info[fcp]
+        self._fcp_pool.update(filtered_fcp_info)
 
     @staticmethod
     def _expand_fcp_list(fcp_list):
@@ -706,15 +695,53 @@ class FCPManager(object):
         return None
 
     def get_all_fcp_pool(self, assigner_id):
+        """
+           The FCP infomation got from smt(zthin) looks like :
+               host: FCP device number: xxxx
+               host:   Status: Active
+               host:   NPIV world wide port number: xxxxxxxx
+               host:   Channel path ID: xx
+               host:   Physical world wide port number: xxxxxxxx
+               ......
+               host: FCP device number: xxxx
+               host:   Status: Active
+               host:   NPIV world wide port number: xxxxxxxx
+               host:   Channel path ID: xx
+               host:   Physical world wide port number: xxxxxxxx
+
+           After process, return value should be a list include FCP ojects
+           whose FCP ID are from CONF.volume.fcp_list and also should be
+           found in fcp_info
+           The return value is a dict object, the key is FCP device ID and
+           the value is the object representing this FCP device.
+        """
         all_fcp_info = self._get_all_fcp_info(assigner_id)
         all_fcp_pool = {}
-        lines_per_item = 5
-        num_fcps = len(all_fcp_info) // lines_per_item
-        for n in range(0, num_fcps):
-            fcp_init_info = all_fcp_info[(5 * n):(5 * (n + 1))]
-            fcp = FCP(fcp_init_info)
-            dev_no = fcp.get_dev_no()
-            all_fcp_pool[dev_no] = fcp
+        fcp_init_info = []
+        end_line = False
+        for index, line in enumerate(all_fcp_info):
+            fcp_init_info.append(line)
+            if index < (len(all_fcp_info) - 1):
+                next_line = all_fcp_info[index + 1]
+                if 'FCP device number' in next_line:
+                    # go here means current line is last line of this FCP
+                    LOG.debug("get_all_fcp_pool reach one end line %s", line)
+                    end_line = True
+                else:
+                    LOG.debug("get_all_fcp_pool process line %s", line)
+            else:
+                # go here means this is the last line of all information
+                LOG.debug("get_all_fcp_pool reach end of all lines %s", line)
+                end_line = True
+            # tranfer gathered info of one FCP into an object
+            if end_line:
+                fcp = FCP(fcp_init_info)
+                # reset fcp_init_info for next FCP device
+                fcp_init_info = []
+                end_line = False
+                # add this object into return dict
+                dev_no = fcp.get_dev_no()
+                all_fcp_pool[dev_no] = fcp
         return all_fcp_pool
 
     def get_wwpn_for_fcp_not_in_conf(self, all_fcp_pool, fcp_no):

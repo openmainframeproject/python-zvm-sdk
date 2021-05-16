@@ -392,6 +392,7 @@ class TestFCPManager(base.SDKTestCase):
                     'opnstk1:   Channel path ID: 59',
                     'opnstk1:   Physical world wide port number: '
                     '20076D8500005181',
+                    'Owner: turns',
                     'opnstk1: FCP device number: B83E',
                     'opnstk1:   Status: Active',
                     'opnstk1:   NPIV world wide port number: '
