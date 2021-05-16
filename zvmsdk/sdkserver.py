@@ -25,6 +25,7 @@ from zvmsdk import config
 from zvmsdk import exception
 from zvmsdk import log
 from zvmsdk import returncode
+from zvmsdk import smtclient
 
 if six.PY3:
     import queue as Queue
@@ -36,6 +37,14 @@ CONF = config.CONF
 LOG = log.LOG
 
 
+def init():
+    # init PERSMAPI, note even the PERSMAPI is up running
+    # we can safely ignore the error (0/8)
+    # the logs can be found at /var/log/zvmsdk/smt.log
+    st = smtclient.get_smtclient()
+    st.guest_start('PERSMAPI')
+
+
 class SDKServer(object):
     def __init__(self):
         # Initailize SDK API
@@ -43,6 +52,7 @@ class SDKServer(object):
         self.server_socket = None
         self.request_queue = Queue.Queue(maxsize=
                                          CONF.sdkserver.request_queue_size)
+        init()
 
     def log_error(self, msg):
         thread = threading.current_thread().name
