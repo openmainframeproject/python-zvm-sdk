@@ -316,6 +316,24 @@ class ReqHandle(object):
                 logString)
         return
 
+    def printSysLogForDebug(self, logString):
+        """
+        Log one or more lines.  Optionally, add them to logEntries list.
+
+        Input:
+           Strings to be logged.
+        """
+
+        if self.daemon:
+            self.daemon.logger.debug(self.requestId + ": " + logString)
+        else:
+            self.logger.debug(self.requestId + ": " + logString)
+
+        if self.captureLogs is True:
+            self.results['logEntries'].append(self.requestId + ": " +
+                logString)
+        return
+
     def updateResults(self, newResults, **kwArgs):
         """
         Update the results related to this request excluding the 'response'

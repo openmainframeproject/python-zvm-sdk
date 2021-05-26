@@ -314,22 +314,26 @@ def installFS(rh, vaddr, mode, fileSystem, diskType):
     try:
         # Sometimes the disk is not ready: sleep and retry
         try_num = 0
-        for sleep_secs in [0.1, 0.2, 0.3, 0.5, 1, 2, -1]:
+        for sleep_secs in [0.2, 0.4, 0.8, 1.6, 2, 2, -1]:
             try_num += 1
             try:
                 out = subprocess.check_output(cmd, close_fds=True)
                 rh.printSysLog("Run `%s` successfully." % strCmd)
                 diskAccessed = True
                 break
-            except CalledProcessError as e:
+            except Exception as e:
                 if sleep_secs > 0:
-                    rh.printSysLog("Num %d try `%s` failed ("
-                                   "retry after %s seconds): "
-                                   "rc=%d msg=%s" % (
-                                   try_num, strCmd, sleep_secs,
-                                   e.returncode, e.output))
+                    rh.printSysLogForDebug("Num %d try `%s` failed ("
+                                           "retry after %s seconds): "
+                                           "exception=%s msg=%s" % (
+                                           try_num, strCmd, sleep_secs,
+                                           type(e).__name__, str(e)))
                     time.sleep(sleep_secs)
                 else:
+                    res = invokeSMCLI(rh, "Image_Query_DM", ['-T', rh.userid])
+                    user_direct = res['response']
+                    rh.printSysLogForDebug("Failed to link %s, its user directory "
+                                           "is:%s." % (rh.userid, user_direct))
                     raise
         if isinstance(out, bytes):
             out = bytes.decode(out)
