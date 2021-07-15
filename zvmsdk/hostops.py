@@ -13,6 +13,7 @@
 #    under the License.
 
 
+import time
 from zvmsdk import config
 from zvmsdk import constants as const
 from zvmsdk import exception
@@ -37,6 +38,8 @@ class HOSTOps(object):
     def __init__(self):
         self._smtclient = smtclient.get_smtclient()
         self._volume_infos = {}
+        self._volumes = None
+        self.cache_expiration = time.time()
 
     def get_info(self):
         inv_info = self._smtclient.get_host_info()
@@ -75,10 +78,26 @@ class HOSTOps(object):
         with zvmutils.expect_invalid_resp_data(guest_list):
             return guest_list
 
+    def _cache_enabled(self):
+        return CONF.monitor.cache_interval > 0
+
     def diskpool_get_volumes(self, pool_name):
-        diskpool_volume_list = self._smtclient.get_diskpool_volumes(pool_name)
-        with zvmutils.expect_invalid_resp_data(diskpool_volume_list):
-            return diskpool_volume_list
+        if self._cache_enabled():
+            if (time.time() > self.cache_expiration):
+                self._volumes = None
+            if self._volumes:
+                return self._volumes
+            else:
+                self._volumes = self._smtclient.get_diskpool_volumes(pool_name)
+                self.cache_expiration = time.time() + \
+                    float(CONF.monitor.cache_interval)
+                with zvmutils.expect_invalid_resp_data(self._volumes):
+                    return self._volumes
+        else:
+            self._volumes = self._smtclient. \
+                get_diskpool_volumes(pool_name)
+            with zvmutils.expect_invalid_resp_data(self._volumes):
+                return self._volumes
 
     def get_volume_info(self, volume_name):
         update_needed = False

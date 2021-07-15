@@ -85,14 +85,26 @@ class SDKHostOpsTestCase(base.SDKTestCase):
         self.assertEqual(dp_info['disk_used'], 367263)
         self.assertEqual(dp_info['disk_available'], 38)
 
+    @mock.patch("time.time")
+    @mock.patch("zvmsdk.hostops.HOSTOps._cache_enabled")
     @mock.patch("zvmsdk.smtclient.SMTClient.get_diskpool_volumes")
-    def test_diskpool_get_volumes(self, get_diskpool_vols):
-        get_diskpool_vols.return_value = {
-            'diskpool_volumes': 'IAS100 IAS101',
-            }
+    def test_diskpool_get_volumes(self, get_diskpool_vols,
+            cache_enable, mock_time):
+        self._hostops._volumes = {}
+        volumes = {'diskpool_volumes': 'IAS100 IAS101'}
+        get_diskpool_vols.return_value = volumes
+        cache_enable.return_value = True
+        mock_time.return_value = 1
         diskpool_vols = self._hostops.diskpool_get_volumes("fakepool")
         get_diskpool_vols.assert_called_once_with("fakepool")
         self.assertEqual(diskpool_vols['diskpool_volumes'], 'IAS100 IAS101')
+        # Test has cache data
+        volumes = {'diskpool_volumes': 'IAS400 IAS501'}
+        base.set_conf('monitor', 'cache_interval', '60')
+        self._hostops._volumes = volumes
+        diskpool_vols = self._hostops.diskpool_get_volumes("fakepool2")
+        self.assertEqual(1, get_diskpool_vols.call_count)
+        self.assertEqual(diskpool_vols['diskpool_volumes'], 'IAS400 IAS501')
 
     @mock.patch("zvmsdk.smtclient.SMTClient.get_volume_info")
     def test_get_volume_info(self, get_vol_infos):
