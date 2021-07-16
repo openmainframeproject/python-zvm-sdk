@@ -166,7 +166,9 @@ function cleanup_fcpdevices {
   # Don't need to judge if the multipath_enabled exist,
   # if it doesn't exist, the $multipath_enabled will be None.
   if [[ ( $multipath_enabled == 1 ) && ( "$wwid" != "" ) ]]; then
-    inform "Cleaning up multipath bindings and wwids."
+    # inform "Cleaning up multipath bindings and wwids."
+    lsblk_output=$(lsblk 2>&1)
+    inform "lsblk output: ${lsblk_output}."
     multipath_output=$(multipath -ll 2>&1)
     inform "multipath output: ${multipath_output}."
     # delete the wwid and refresh multipath map
@@ -175,15 +177,14 @@ function cleanup_fcpdevices {
     if [[ ( $rc -eq 0 ) && ( "$map_name" != "" ) ]]; then
         inform "multipath wwid: $wwid, map name: $map_name."
         find_and_deactivate_lvm_vgs $map_name
-        wwid_out=`multipath -w $map_name 2>&1`
-        rc1=$?
+        #wwid_out=`multipath -w $map_name 2>&1`
+        #rc1=$?
         # add retry according to multipath -h:
         # -R num: number of times to retry removes of in-use devices 
         flush_out=`multipath -R 3 -f $map_name 2>&1`
         rc2=$?
-        if [[ ( $rc1 -ne 0 ) || ( $rc2 -ne 0 ) ]]; then
-            inform "Failed to cleanup $map_name. wwid rc1: $rc1, output: $wwid_out. 
-            flush rc2: $rc2, output: $flush_out."
+        if [[ ( $rc2 -ne 0 ) ]]; then
+            inform "Failed to flush $map_name. rc: $rc2, output: $flush_out."
         else
             inform "multipath $map_name flushed successfully."
         fi
@@ -192,6 +193,10 @@ function cleanup_fcpdevices {
             inform 'start: clean multipath leftover'
             cmd_out=$(dmsetup info)
             inform "dmsetup info output: ${cmd_out}."
+            if [[ `which lsof &> /dev/null; echo $?` -eq 0 ]]; then
+                lsof_mpath=$(lsof /dev/mapper/$map_name 2>&1)
+                inform "lsof of device ${map_name}: ${lsof_mpath}."
+            fi
             # check whether any path exists for current multipath device
             # path_num examples:
             #   0: if no path
@@ -209,7 +214,7 @@ function cleanup_fcpdevices {
                 do
                     echo offline > /sys/block/$p/device/state
                     echo 1 > /sys/block/$p/device/delete
-                    inform 'path $p deleted'
+                    inform "path $p deleted"
                 done
             fi
             # delete multipath device itself
@@ -233,19 +238,24 @@ function cleanup_fcpdevices {
                 fi
             fi
             inform 'end: clean multipath leftover'
-            cmd_out=$(dmsetup info)
-            inform "dmsetup info output: ${cmd_out}." 
         fi
     else
         inform "Failed to get the multipath map name or map name is null for wwid: $wwid. rc is $rc."
     fi
-    if [[ -f /etc/multipath/bindings ]]; then
-        sed -i "/$wwid/d" /etc/multipath/bindings
-    fi
+    #if [[ -f /etc/multipath/bindings ]]; then
+        #sed -i "/$wwid/d" /etc/multipath/bindings
+    #fi
     lszfcp_output=$(lszfcp -HD 2>&1)
     inform "lszfcp output: ${lszfcp_output}"
     multipath_output=$(multipath -ll 2>&1)
     inform "multipath output: ${multipath_output}."
+    cmd_out=$(dmsetup info)
+    inform "dmsetup info output: ${cmd_out}." 
+    if [[ ( `which lsof &> /dev/null; echo $?` -eq 0 ) && ( "$map_name" != "" ) && ( -e /dev/mapper/${map_name} ) ]]; then
+      # log whether there's any process still occupying the mpath device
+      lsof_mpath=$(lsof /dev/mapper/$map_name 2>&1)
+      inform "lsof of device ${map_name}: ${lsof_mpath}."
+    fi
   fi
   inform "Finish refreshing multipath bindings."
 
@@ -277,6 +287,22 @@ function cleanup_fcpdevices {
       offlineUndedicateFcp $fcp 
   done
   inform "Finish disconnecting FCP devices."
+  inform "Log information before EXIT."
+  lszfcp_output=$(lszfcp -HD 2>&1)
+  inform "lszfcp output: ${lszfcp_output}"
+  multipath_output=$(multipath -ll 2>&1)
+  inform "multipath output: ${multipath_output}."
+  dmsetup_info=$(dmsetup info 2>&1)
+  inform "dmsetup info: ${dmsetup_info}."
+  mapper_folder=$(ls -l /dev/mapper/ 2>&1)
+  inform "/dev/mapper/ folder: ${mapper_folder}."
+  dm_device=$(ls -l /dev/dm-* 2>&1)
+  inform "/dev/dm-* devices: ${dm_device}."
+  if [[ ( `which lsof &> /dev/null; echo $?` -eq 0 ) && ( "$map_name" != "" ) && ( -e /dev/mapper/${map_name} ) ]]; then
+      # log whether there's any process still occupying the mpath device
+      lsof_mpath=$(lsof /dev/mapper/$map_name 2>&1)
+      inform "lsof of device ${map_name}: ${lsof_mpath}."
+  fi
 } #cleanup_fcpdevices
 
 function printCMDExamples {
@@ -411,6 +437,9 @@ function printLogs {
   # multipath -ll
   multipath_output=$(multipath -ll 2>&1)
   inform "multipath output: ${multipath_output}."
+  # lsblk
+  lsblk_output=$(lsblk 2>&1)
+  inform "lsblk output: ${lsblk_output}."
 } #printLogs
 
 function checkMultipath {
