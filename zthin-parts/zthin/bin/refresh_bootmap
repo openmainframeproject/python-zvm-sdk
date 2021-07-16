@@ -90,7 +90,6 @@ function cleanup_umountdir_and_disconnect_fcp {
     rc=$?
     if [[ $rc -ne 0 ]]; then
       printError "Failed to Umount devNode $devNode from $deviceMountPoint. rc: $rc. out: $out."
-      exit 9
     fi
     inform "Successed to umount devNode $devNode from $deviceMountPoint"
     # remove the temporary mount point dir
@@ -104,7 +103,6 @@ function cleanup_umountdir_and_disconnect_fcp {
     inform "Finish cleanuping umount dir."
   else
     printError "Failed to umount devNode $devNode due to deviceMountPoint not defined."
-    exit 9
   fi
 
   cleanup_fcpdevices
